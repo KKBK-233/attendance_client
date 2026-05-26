@@ -1,0 +1,12 @@
+{
+  "name": "attendance-client-cookie-capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "capture:cookies": "node capture_auth_cookies.js"
+  },
+  "dependencies": {
+    "playwright-core": "^1.56.0"
+  }
+}
