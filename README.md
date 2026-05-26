@@ -34,6 +34,15 @@ flutter build windows
 build\windows\x64\runner\Release\attendance_client.exe
 ```
 
+## 发布
+
+推送 `v*` 标签会触发 GitHub Actions 自动构建并创建 Release：
+
+- `attendance_client_windows_<tag>.zip`
+- `attendance_client_android_<tag>.apk`
+
+Windows 压缩包内包含 Cookie 捕获脚本和 `playwright-core` 依赖；APK 版本不支持自动读取外部浏览器 Cookie，需要手动粘贴。
+
 ## 配置说明
 
 - `JW_COOKIE`：从浏览器或现有 `.env` 中复制教务系统 Cookie

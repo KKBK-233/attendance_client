@@ -13,11 +13,11 @@ void main() {
 class AppConfig {
   AppConfig({
     this.cookie = '',
-    this.studentId = '230100859',
-    this.planWid = 'd11fdc3bb4614ccf9a3093497f8049ce',
-    this.area = '广东省, 佛山市, 南海区',
-    this.address = '广东省佛山市南海区桂城街道桂澜中路23号金域国际花园一期1座2幢706房',
-    this.remark = '忘记打卡',
+    this.studentId = '',
+    this.planWid = '',
+    this.area = '',
+    this.address = '',
+    this.remark = '',
     String? month,
     String? endMonth,
     this.workPattern = 'five',
@@ -44,11 +44,11 @@ class AppConfig {
 
     return AppConfig(
       cookie: json['cookie']?.toString() ?? '',
-      studentId: nonEmpty('studentId', '230100859'),
-      planWid: nonEmpty('planWid', 'd11fdc3bb4614ccf9a3093497f8049ce'),
-      area: nonEmpty('area', '广东省, 佛山市, 南海区'),
-      address: nonEmpty('address', '广东省佛山市南海区桂城街道桂澜中路23号金域国际花园一期1座2幢706房'),
-      remark: nonEmpty('remark', '忘记打卡'),
+      studentId: nonEmpty('studentId', ''),
+      planWid: nonEmpty('planWid', ''),
+      area: nonEmpty('area', ''),
+      address: nonEmpty('address', ''),
+      remark: nonEmpty('remark', ''),
       month: nonEmpty('month', monthOf(DateTime.now())),
       endMonth: nonEmpty(
         'endMonth',
