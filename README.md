@@ -41,7 +41,7 @@ build\windows\x64\runner\Release\attendance_client.exe
 - `attendance_client_windows_<tag>.zip`
 - `attendance_client_android_<tag>.apk`
 
-Windows 压缩包内包含 Cookie 捕获脚本和 `playwright-core` 依赖；APK 版本不支持自动读取外部浏览器 Cookie，需要手动粘贴。
+Windows 压缩包内包含 Cookie 捕获脚本、`playwright-core` 依赖和 `node.exe` 运行时；使用者解压后直接运行，不需要额外安装 Node.js。APK 版本不支持自动读取外部浏览器 Cookie，需要手动粘贴。
 
 ## 配置说明
 

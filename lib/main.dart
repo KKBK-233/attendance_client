@@ -198,6 +198,38 @@ class BrowserCookieCapture {
     return null;
   }
 
+  static Future<String> findNodeExecutable(File script) async {
+    final executableDir = File(Platform.resolvedExecutable).parent;
+    final candidates = <File>[
+      File('${script.parent.path}\\node.exe'),
+      File('${script.parent.path}\\node\\node.exe'),
+      File('${executableDir.path}\\node.exe'),
+      File('${executableDir.path}\\node\\node.exe'),
+      File('${Directory.current.path}\\node.exe'),
+    ];
+
+    for (final candidate in candidates) {
+      if (await candidate.exists()) {
+        return candidate.path;
+      }
+    }
+
+    for (final command in const ['node.exe', 'node']) {
+      try {
+        final result = await Process.run(command, const ['--version']);
+        if (result.exitCode == 0) {
+          return command;
+        }
+      } on ProcessException {
+        // Try the next command name before reporting a missing runtime.
+      }
+    }
+
+    throw StateError(
+      '未找到 Node.js 运行环境。请使用完整的 Windows 发布包，或安装 Node.js 18 及以上版本。',
+    );
+  }
+
   static Future<Directory> outputDir() async {
     final base =
         Platform.environment['APPDATA'] ??
@@ -800,8 +832,9 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
 
       final outDir = await BrowserCookieCapture.outputDir();
       _captureOutDir = outDir;
+      final node = await BrowserCookieCapture.findNodeExecutable(script);
 
-      final process = await Process.start('node', [
+      final process = await Process.start(node, [
         script.path,
         '--out',
         outDir.path,
