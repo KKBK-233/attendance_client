@@ -4,7 +4,8 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "capture:cookies": "node capture_auth_cookies.js"
+    "capture:cookies": "node capture_auth_cookies.js",
+    "checkin": "node auto_checkin.js"
   },
   "dependencies": {
     "playwright-core": "^1.56.0"

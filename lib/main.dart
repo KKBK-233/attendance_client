@@ -18,6 +18,7 @@ class AppConfig {
     this.area = '',
     this.address = '',
     this.remark = '',
+    this.arrivalTime = '',
     String? month,
     String? endMonth,
     this.workPattern = 'five',
@@ -31,6 +32,7 @@ class AppConfig {
   String area;
   String address;
   String remark;
+  String arrivalTime;
   String month;
   String endMonth;
   String workPattern;
@@ -49,6 +51,7 @@ class AppConfig {
       area: nonEmpty('area', ''),
       address: nonEmpty('address', ''),
       remark: nonEmpty('remark', ''),
+      arrivalTime: nonEmpty('arrivalTime', ''),
       month: nonEmpty('month', monthOf(DateTime.now())),
       endMonth: nonEmpty(
         'endMonth',
@@ -67,6 +70,7 @@ class AppConfig {
       'area': area,
       'address': address,
       'remark': remark,
+      'arrivalTime': arrivalTime,
       'month': month,
       'endMonth': endMonth,
       'workPattern': workPattern,
@@ -122,6 +126,37 @@ class InternshipPlan {
   final String wid;
   final String name;
   final String schoolYear;
+}
+
+class CurrentUser {
+  CurrentUser({required this.studentId, required this.name});
+
+  final String studentId;
+  final String name;
+}
+
+class CheckInContext {
+  CheckInContext({
+    required this.planWid,
+    required this.schoolYear,
+    required this.today,
+    required this.alreadyCheckedIn,
+    required this.academicYearOpen,
+    required this.postAllowsCheckIn,
+    required this.systemStartTime,
+    required this.systemEndTime,
+    this.existingTime = '',
+  });
+
+  final String planWid;
+  final String schoolYear;
+  final String today;
+  final bool alreadyCheckedIn;
+  final bool academicYearOpen;
+  final bool postAllowsCheckIn;
+  final String systemStartTime;
+  final String systemEndTime;
+  final String existingTime;
 }
 
 class HolidayData {
@@ -384,6 +419,27 @@ class AttendanceApi {
     return signed;
   }
 
+  Future<CurrentUser> fetchCurrentUser() async {
+    _requireCookie();
+
+    final raw = await _requestText(
+      Uri.parse('https://$_host/jwapp/sys/xsdgsxbmMobile/*default/index.do'),
+      method: 'GET',
+      referer:
+          'https://$_host/jwapp/sys/xsdgsxbmMobile/*default/index.do#/ckqdxx',
+    );
+
+    final userId = _readPageMetaParam(raw, 'USERID');
+    if (userId.isEmpty) {
+      throw StateError('未能从教务页面读取学号，请重新登录后再试。');
+    }
+
+    return CurrentUser(
+      studentId: userId,
+      name: _readPageMetaParam(raw, 'USERNAME'),
+    );
+  }
+
   Future<InternshipPlan?> fetchLatestPlan() async {
     _requireCookie();
     if (config.studentId.trim().isEmpty) {
@@ -418,6 +474,124 @@ class AttendanceApi {
       name: row['JHMC']?.toString() ?? '未命名计划',
       schoolYear: row['XNDM']?.toString() ?? '',
     );
+  }
+
+  Future<CheckInContext> fetchTodayCheckInContext() async {
+    _requireCookie();
+    _requireStudentId();
+
+    final activePlan = await _fetchActiveInternship();
+    if (activePlan == null) {
+      throw StateError('当前没有实习中的计划，无法签到。');
+    }
+
+    final planWid = activePlan['WID']?.toString() ?? '';
+    final schoolYear = activePlan['XNDM']?.toString() ?? '';
+    if (planWid.isEmpty) {
+      throw StateError('未能读取实习计划 WID。');
+    }
+
+    final today = todayInChina();
+    final rows = await _fetchTodayCheckInRows(planWid, today);
+    final existingTime = rows.isEmpty
+        ? ''
+        : rows.first['QDSJ']?.toString().take(19) ?? '';
+
+    final postInfo = await _requestJson(
+      Uri.parse('$_base/qddk/cxjhxszwxx.do'),
+      method: 'POST',
+      body: _encodeForm({'JHXSWID': planWid, 'SFDQZW': '1'}),
+      referer:
+          'https://$_host/jwapp/sys/xsdgsxbmMobile/*default/index.do#/qddk',
+    );
+    final postRow = ((postInfo['datas'] as Map?)?['cxjhxszwxx'] as Map?) ?? {};
+    final postAllowsCheckIn =
+        postRow.isNotEmpty && postRow['ZYSFDK']?.toString() != '0';
+
+    final academicYearOpen = await _isAcademicYearOpen(schoolYear);
+    final settings = await _fetchCheckInSettings();
+
+    return CheckInContext(
+      planWid: planWid,
+      schoolYear: schoolYear,
+      today: today,
+      alreadyCheckedIn: rows.isNotEmpty,
+      academicYearOpen: academicYearOpen,
+      postAllowsCheckIn: postAllowsCheckIn,
+      systemStartTime: settings['SBDKSJ']?.toString() ?? '',
+      systemEndTime: settings['XBDKSJ']?.toString() ?? '',
+      existingTime: existingTime,
+    );
+  }
+
+  Future<SubmitResult> submitTodayCheckIn(String arrivalTime) async {
+    _requireCookie();
+    _requireStudentId();
+    _requireLocation();
+
+    final normalizedTime = normalizeTime(arrivalTime);
+    if (normalizedTime == null) {
+      throw StateError('到岗时间格式应为 HH:mm 或 HH:mm:ss');
+    }
+    if (normalizedTime.compareTo(currentTimeInChina()) > 0) {
+      throw StateError('到岗时间不能晚于当前中国时间，请核对后再提交。');
+    }
+
+    final context = await fetchTodayCheckInContext();
+    if (context.alreadyCheckedIn) {
+      throw StateError('今天已有签到记录：${context.existingTime}');
+    }
+    if (!context.academicYearOpen) {
+      throw StateError('当前计划学年暂未开放签到，请联系管理员。');
+    }
+    if (!context.postAllowsCheckIn) {
+      throw StateError('当前岗位配置不允许签到。');
+    }
+
+    final form = {
+      'JHXSWID': context.planWid,
+      'XH': config.studentId.trim(),
+      'QDSJ': '${context.today} $normalizedTime',
+      'QDSZD': config.area.trim(),
+      'QDXXDZ': config.address.trim(),
+      'BY1': 'qddk',
+      'WID': '',
+    };
+
+    final raw = await _requestText(
+      Uri.parse('$_base/qddk/bcxsqdxx.do'),
+      method: 'POST',
+      body: _encodeForm({
+        'param': jsonEncode([form]),
+      }),
+      referer:
+          'https://$_host/jwapp/sys/xsdgsxbmMobile/*default/index.do#/qddk',
+    );
+
+    var message = raw.take(160);
+    var accepted = false;
+    try {
+      final data = _decodeJsonMap(raw);
+      final ext =
+          (((data['datas'] as Map?)?['bcxsqdxx'] as Map?)?['extParams']
+              as Map?) ??
+          ((data['bcxsqdxx'] as Map?)?['extParams'] as Map?) ??
+          {};
+      final code = ext['code']?.toString();
+      message = ext['msg']?.toString() ?? data['msg']?.toString() ?? message;
+      accepted = code == '1';
+    } catch (_) {
+      // Verify below; some platform handlers return unusual JSON shapes.
+    }
+
+    final rowsAfterSubmit = await _fetchTodayCheckInRows(
+      context.planWid,
+      context.today,
+    );
+    final verified = rowsAfterSubmit.any(
+      (row) => (row['QDSJ']?.toString() ?? '').startsWith('${context.today} '),
+    );
+    return SubmitResult(success: accepted || verified, message: message);
   }
 
   Future<SubmitResult> submitRemedy(String date) async {
@@ -460,6 +634,106 @@ class AttendanceApi {
     } catch (_) {
       return SubmitResult(success: false, message: raw.take(160));
     }
+  }
+
+  Future<Map<String, dynamic>?> _fetchActiveInternship() async {
+    final data = await _requestJson(
+      Uri.parse('$_base/qddk/cxjhxs.do'),
+      method: 'POST',
+      body: _encodeForm({'XH': config.studentId.trim(), 'SXZT': 'sxz'}),
+      referer:
+          'https://$_host/jwapp/sys/xsdgsxbmMobile/*default/index.do#/qddk',
+    );
+    final row = (data['datas'] as Map?)?['cxjhxs'];
+    return row is Map ? Map<String, dynamic>.from(row) : null;
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchTodayCheckInRows(
+    String planWid,
+    String today,
+  ) async {
+    final querySetting = jsonEncode([
+      {
+        'name': 'JHXSWID',
+        'value': planWid,
+        'linkOpt': 'and',
+        'builder': 'equal',
+      },
+      {'name': 'QDSJ', 'value': today, 'linkOpt': 'and', 'builder': 'include'},
+    ]);
+
+    final data = await _requestJson(
+      Uri.parse('$_base/qddk/cxxsqd.do'),
+      method: 'POST',
+      body: _encodeForm({'querySetting': querySetting, '*order': '+QDSJ'}),
+      referer:
+          'https://$_host/jwapp/sys/xsdgsxbmMobile/*default/index.do#/qddk',
+    );
+    final rows =
+        (((data['datas'] as Map?)?['cxxsqd'] as Map?)?['rows'] as List?) ?? [];
+    return rows
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList();
+  }
+
+  Future<bool> _isAcademicYearOpen(String schoolYear) async {
+    if (schoolYear.trim().isEmpty) return false;
+
+    final data = await _requestJson(
+      Uri.parse('$_base/qddk/gjxndmxycxxtcsxx.do'),
+      method: 'POST',
+      body: _encodeForm({'XNDM': schoolYear.trim()}),
+      referer:
+          'https://$_host/jwapp/sys/xsdgsxbmMobile/*default/index.do#/qddk',
+    );
+    final rows =
+        (((data['datas'] as Map?)?['gjxndmxycxxtcsxx'] as Map?)?['rows']
+            as List?) ??
+        [];
+    return rows.isNotEmpty;
+  }
+
+  Future<Map<String, dynamic>> _fetchCheckInSettings() async {
+    final data = await _requestJson(
+      Uri.parse('$_base/ckqdxx/cxcssz.do'),
+      method: 'POST',
+      body: '',
+      referer:
+          'https://$_host/jwapp/sys/xsdgsxbmMobile/*default/index.do#/qddk',
+    );
+    final rows =
+        (((data['datas'] as Map?)?['cxcssz'] as Map?)?['rows'] as List?) ?? [];
+    final row = rows.isNotEmpty && rows.first is Map ? rows.first as Map : {};
+    return Map<String, dynamic>.from(row);
+  }
+
+  Future<Map<String, dynamic>> _requestJson(
+    Uri uri, {
+    required String method,
+    String? body,
+    String? referer,
+    bool includeCookie = true,
+  }) async {
+    final raw = await _requestText(
+      uri,
+      method: method,
+      body: body,
+      referer: referer,
+      includeCookie: includeCookie,
+    );
+    return _decodeJsonMap(raw);
+  }
+
+  Map<String, dynamic> _decodeJsonMap(String raw) {
+    dynamic decoded = jsonDecode(raw);
+    if (decoded is String) {
+      decoded = jsonDecode(decoded);
+    }
+    if (decoded is! Map) {
+      throw const FormatException('接口返回不是 JSON 对象');
+    }
+    return Map<String, dynamic>.from(decoded);
   }
 
   Future<String> _requestText(
@@ -531,9 +805,21 @@ class AttendanceApi {
     }
   }
 
+  void _requireStudentId() {
+    if (config.studentId.trim().isEmpty) {
+      throw StateError('请先填写或自动获取学号');
+    }
+  }
+
   void _requirePlanWid() {
     if (config.planWid.trim().isEmpty) {
       throw StateError('请先填写或自动获取实习计划 WID');
+    }
+  }
+
+  void _requireLocation() {
+    if (config.area.trim().isEmpty || config.address.trim().isEmpty) {
+      throw StateError('请先填写签到所在地和详细地址');
     }
   }
 
@@ -545,6 +831,29 @@ class AttendanceApi {
           return '$key=$value';
         })
         .join('&');
+  }
+
+  String _readPageMetaParam(String html, String key) {
+    final pageMetaMatch = RegExp(
+      r'pageMeta\s*=\s*(\{.*?\});',
+      dotAll: true,
+    ).firstMatch(html);
+    if (pageMetaMatch != null) {
+      try {
+        final pageMeta =
+            jsonDecode(pageMetaMatch.group(1)!) as Map<String, dynamic>;
+        final params = pageMeta['params'];
+        if (params is Map) {
+          final value = params[key]?.toString().trim() ?? '';
+          if (value.isNotEmpty) return value;
+        }
+      } catch (_) {
+        // Fall back to a direct field match when the page script is not JSON.
+      }
+    }
+
+    final fieldMatch = RegExp('"$key"\\s*:\\s*"([^"]*)"').firstMatch(html);
+    return fieldMatch?.group(1)?.trim() ?? '';
   }
 }
 
@@ -589,6 +898,7 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
   final _areaCtrl = TextEditingController();
   final _addressCtrl = TextEditingController();
   final _remarkCtrl = TextEditingController();
+  final _arrivalTimeCtrl = TextEditingController();
   final _monthCtrl = TextEditingController();
   final _endMonthCtrl = TextEditingController();
   final _delayCtrl = TextEditingController();
@@ -615,6 +925,7 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
     _areaCtrl.dispose();
     _addressCtrl.dispose();
     _remarkCtrl.dispose();
+    _arrivalTimeCtrl.dispose();
     _monthCtrl.dispose();
     _endMonthCtrl.dispose();
     _delayCtrl.dispose();
@@ -637,6 +948,9 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
     _areaCtrl.text = config.area;
     _addressCtrl.text = config.address;
     _remarkCtrl.text = config.remark;
+    _arrivalTimeCtrl.text = config.arrivalTime.trim().isEmpty
+        ? currentTimeInChina()
+        : config.arrivalTime;
     _monthCtrl.text = config.month;
     _endMonthCtrl.text = config.endMonth;
     _delayCtrl.text = config.delayMs.toString();
@@ -651,6 +965,7 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
       area: _areaCtrl.text.trim(),
       address: _addressCtrl.text.trim(),
       remark: _remarkCtrl.text.trim(),
+      arrivalTime: _arrivalTimeCtrl.text.trim(),
       month: _monthCtrl.text.trim(),
       endMonth: _endMonthCtrl.text.trim(),
       workPattern: _workPattern,
@@ -666,14 +981,48 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
     });
   }
 
+  Future<CurrentUser> _fetchAndApplyCurrentUser(AppConfig config) async {
+    final user = await AttendanceApi(config).fetchCurrentUser();
+    config.studentId = user.studentId;
+    _studentIdCtrl.text = user.studentId;
+    await ConfigStore.save(_readConfig());
+    return user;
+  }
+
+  Future<void> _fetchCurrentStudentId() async {
+    final config = _readConfig();
+    setState(() {
+      _busy = true;
+      _status = '正在从教务登录态读取学号...';
+    });
+
+    try {
+      final user = await _fetchAndApplyCurrentUser(config);
+      final nameText = user.name.isEmpty ? '' : '（${user.name}）';
+      setState(() {
+        _status = '已获取学号：${user.studentId}$nameText';
+      });
+    } catch (error) {
+      setState(() => _status = '获取学号失败：$error');
+    } finally {
+      setState(() => _busy = false);
+    }
+  }
+
   Future<void> _fetchLatestPlan() async {
     final config = _readConfig();
     setState(() {
       _busy = true;
-      _status = '正在获取最新实习计划...';
+      _status = config.studentId.trim().isEmpty
+          ? '正在先获取学号，再获取最新实习计划...'
+          : '正在获取最新实习计划...';
     });
 
     try {
+      if (config.studentId.trim().isEmpty) {
+        await _fetchAndApplyCurrentUser(config);
+      }
+
       final plan = await AttendanceApi(config).fetchLatestPlan();
       if (plan == null) {
         setState(() => _status = '没有查到实习计划，请确认 Cookie 和学号是否正确。');
@@ -689,6 +1038,133 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
       setState(() => _status = '获取实习计划失败：$error');
     } finally {
       setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _checkTodayCheckIn() async {
+    final config = _readConfig();
+    setState(() {
+      _busy = true;
+      _status = '正在检查今日签到状态...';
+    });
+
+    try {
+      if (config.studentId.trim().isEmpty) {
+        await _fetchAndApplyCurrentUser(config);
+      }
+      final checkIn = await AttendanceApi(config).fetchTodayCheckInContext();
+      _planWidCtrl.text = checkIn.planWid;
+      await ConfigStore.save(_readConfig());
+
+      final timeText = [
+        if (checkIn.systemStartTime.isNotEmpty)
+          '上班参考 ${checkIn.systemStartTime}',
+        if (checkIn.systemEndTime.isNotEmpty) '下班参考 ${checkIn.systemEndTime}',
+      ].join('，');
+      final status = checkIn.alreadyCheckedIn
+          ? '今天已有签到记录：${checkIn.existingTime}'
+          : '今天尚未签到，可按实际到岗时间提交';
+      setState(() {
+        _status = '$status${timeText.isEmpty ? '' : '；$timeText'}';
+      });
+    } catch (error) {
+      setState(() => _status = '检查今日签到失败：$error');
+    } finally {
+      setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _submitTodayCheckIn() async {
+    final config = _readConfig();
+    final arrivalTime = normalizeTime(config.arrivalTime);
+    if (arrivalTime == null) {
+      setState(() => _status = '到岗时间格式应为 HH:mm 或 HH:mm:ss');
+      return;
+    }
+    if (arrivalTime.compareTo(currentTimeInChina()) > 0) {
+      setState(() => _status = '到岗时间不能晚于当前中国时间，请核对后再提交。');
+      return;
+    }
+    if (config.area.trim().isEmpty || config.address.trim().isEmpty) {
+      setState(() => _status = '请先填写签到所在地和详细地址。');
+      return;
+    }
+
+    setState(() {
+      _busy = true;
+      _status = '正在检查今日签到条件...';
+    });
+
+    try {
+      if (config.studentId.trim().isEmpty) {
+        await _fetchAndApplyCurrentUser(config);
+      }
+      final api = AttendanceApi(config);
+      final checkIn = await api.fetchTodayCheckInContext();
+      _planWidCtrl.text = checkIn.planWid;
+      await ConfigStore.save(_readConfig());
+
+      if (checkIn.alreadyCheckedIn) {
+        setState(() => _status = '今天已有签到记录：${checkIn.existingTime}');
+        return;
+      }
+      if (!checkIn.academicYearOpen) {
+        setState(() => _status = '当前计划学年暂未开放签到，请联系管理员。');
+        return;
+      }
+      if (!checkIn.postAllowsCheckIn) {
+        setState(() => _status = '当前岗位配置不允许签到。');
+        return;
+      }
+
+      setState(() => _busy = false);
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('确认今日签到'),
+          content: Text(
+            '将按实际到岗时间提交今日签到：\n\n'
+            '时间：${checkIn.today} $arrivalTime\n'
+            '地点：${config.area}\n'
+            '地址：${config.address}\n\n'
+            '请确认这些信息真实准确。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('确认提交'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) {
+        setState(() => _status = '已取消今日签到。');
+        return;
+      }
+
+      setState(() {
+        _busy = true;
+        _status = '正在提交今日签到...';
+      });
+      final result = await AttendanceApi(
+        _readConfig(),
+      ).submitTodayCheckIn(arrivalTime);
+      setState(() {
+        _status = result.success
+            ? '今日签到提交成功：${result.message}'
+            : '今日签到提交失败：${result.message}';
+      });
+    } catch (error) {
+      setState(() => _status = '今日签到失败：$error');
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
     }
   }
 
@@ -1096,7 +1572,22 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
             style: TextStyle(color: Colors.grey.shade700, height: 1.35),
           ),
         const SizedBox(height: 12),
-        _field(controller: _studentIdCtrl, label: '学号'),
+        Row(
+          children: [
+            Expanded(
+              child: _field(controller: _studentIdCtrl, label: '学号'),
+            ),
+            const SizedBox(width: 10),
+            Tooltip(
+              message: '从当前 Cookie 自动获取学号',
+              child: OutlinedButton.icon(
+                onPressed: _busy ? null : _fetchCurrentStudentId,
+                icon: const Icon(Icons.person_search_outlined),
+                label: const Text('自动获取'),
+              ),
+            ),
+          ],
+        ),
         const SizedBox(height: 12),
         _field(controller: _planWidCtrl, label: '实习计划 WID'),
         const SizedBox(height: 10),
@@ -1107,6 +1598,33 @@ class _AttendanceHomePageState extends State<AttendanceHomePage> {
             icon: const Icon(Icons.badge_outlined),
             label: const Text('自动获取 WID'),
           ),
+        ),
+        const SizedBox(height: 18),
+        _sectionTitle('今日签到'),
+        _field(
+          controller: _arrivalTimeCtrl,
+          label: '实际到岗时间 HH:mm:ss',
+          hint: '例如 10:30:00',
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _busy ? null : _checkTodayCheckIn,
+                icon: const Icon(Icons.fact_check_outlined),
+                label: const Text('检查今日'),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: _busy ? null : _submitTodayCheckIn,
+                icon: const Icon(Icons.how_to_reg_outlined),
+                label: const Text('提交签到'),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 18),
         _sectionTitle('补签信息'),
@@ -1480,6 +1998,32 @@ String nowInChina() {
       '${china.hour.toString().padLeft(2, '0')}:'
       '${china.minute.toString().padLeft(2, '0')}:'
       '${china.second.toString().padLeft(2, '0')}';
+}
+
+String todayInChina() {
+  final china = DateTime.now().toUtc().add(const Duration(hours: 8));
+  return formatDate(china);
+}
+
+String currentTimeInChina() {
+  final china = DateTime.now().toUtc().add(const Duration(hours: 8));
+  return '${china.hour.toString().padLeft(2, '0')}:'
+      '${china.minute.toString().padLeft(2, '0')}:'
+      '${china.second.toString().padLeft(2, '0')}';
+}
+
+String? normalizeTime(String value) {
+  final match = RegExp(
+    r'^([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$',
+  ).firstMatch(value.trim());
+  if (match == null) return null;
+
+  final hour = int.parse(match.group(1)!);
+  final minute = int.parse(match.group(2)!);
+  final second = int.parse(match.group(3) ?? '0');
+  return '${hour.toString().padLeft(2, '0')}:'
+      '${minute.toString().padLeft(2, '0')}:'
+      '${second.toString().padLeft(2, '0')}';
 }
 
 extension ShortString on String {

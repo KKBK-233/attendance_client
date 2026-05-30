@@ -40,7 +40,7 @@ jobs:
           $packageDir = "release_windows"
           New-Item -ItemType Directory -Path $packageDir | Out-Null
           Copy-Item -Path "build\windows\x64\runner\Release\*" -Destination $packageDir -Recurse -Force
-          Copy-Item -Path "capture_auth_cookies.js","package.json","package-lock.json","README.md" -Destination $packageDir -Force
+          Copy-Item -Path "capture_auth_cookies.js","auto_checkin.js","package.json","package-lock.json","README.md" -Destination $packageDir -Force
           Copy-Item -Path "node_modules" -Destination $packageDir -Recurse -Force
           Copy-Item -Path (Get-Command node).Source -Destination "$packageDir\node.exe" -Force
           Compress-Archive -Path "$packageDir\*" -DestinationPath "attendance_client_windows_${{ github.ref_name }}.zip" -Force
